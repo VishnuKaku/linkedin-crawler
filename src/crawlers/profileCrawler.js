@@ -1,50 +1,58 @@
-const puppeteer = require('puppeteer');
-const { getRandomUserAgent } = require('../utils/userAgentRotator');
-const proxyRotator = require('../utils/proxyRotator');
-const Profile = require('../models/Profile');
-const { retryCrawl } = require('../utils/retry'); // Custom retry logic
+// src/api/controllers/profileController.js
+const { getRelevantProfiles } = require('../../services/profileService');
+const Joi = require('joi');
 
-async function profileCrawler(url) {
-  const proxy = proxyRotator.getNext();
-  let browser;
-  try {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [`--proxy-server=${proxy}`]
-    });
-    const page = await browser.newPage();
+const profileQuerySchema = Joi.object({
+    designation: Joi.string().required(),
+    location: Joi.string().required(),
+    company: Joi.string().required(),
+    skillsRequired: Joi.array().items(Joi.string()).optional()
+});
 
-    const userAgent = getRandomUserAgent();
-    await page.setUserAgent(userAgent);
+const getProfiles = async (req, res) => {
+    try {
+        const { error, value } = profileQuerySchema.validate(req.query, { abortEarly: false });
+        
+        if (error) {
+            return res.status(400).json({
+                success: false,
+                error: 'Validation error',
+                details: error.details.map(d => d.message)
+            });
+        }
 
-    // Retry crawl in case of errors
-    await retryCrawl(async () => {
-      await page.goto(url, { waitUntil: 'networkidle2' });
-      await page.waitForSelector('.pv-top-card');
+        const { designation, location, company, skillsRequired } = value;
 
-      const profileData = await page.evaluate(() => {
-        const name = document.querySelector('.pv-top-card--list li')?.innerText || '';
-        const headline = document.querySelector('.pv-top-card--headline')?.innerText || '';
-        const location = document.querySelector('.pv-top-card--list-bullet li')?.innerText || '';
-        const summary = document.querySelector('.pv-about__summary-text')?.innerText || '';
-        const currentCompany = document.querySelector('.pv-entity__secondary-title')?.innerText || '';
-        const skills = [...document.querySelectorAll('.pv-skill-category-entity__name-text')].map(skill => skill.innerText);
+        const profiles = await getRelevantProfiles({
+            designation,
+            location,
+            company,
+            skills: skillsRequired
+        });
 
-        return { name, title: headline, location, summary, currentCompany, skills };
-      });
+        if (!profiles || profiles.length === 0) {
+            return res.status(404).json({ 
+                message: 'No profiles found for the given criteria.' 
+            });
+        }
 
-      // Save to database
-      const newProfile = new Profile(profileData);
-      await newProfile.save();
-      console.log('Profile saved:', profileData);
-    });
-  } catch (error) {
-    console.error('Error crawling profile:', error);
-  } finally {
-    if (browser) {
-      await browser.close();
+        return res.status(200).json({
+            success: true,
+            data: {
+                profiles: profiles,
+                count: profiles.length
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in getProfiles:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Internal server error'
+        });
     }
-  }
-}
+};
 
-module.exports = profileCrawler;
+module.exports = {
+    getProfiles
+};

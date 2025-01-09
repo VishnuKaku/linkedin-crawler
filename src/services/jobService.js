@@ -1,79 +1,91 @@
-// jobService.js
-const calculateJobMatchScore = (job, criteria) => {
-  let score = 0;
-  const weights = {
-    designation: 0.3,
-    experience: 0.2,
-    location: 0.2,
-    jobFunction: 0.15,
-    preferences: 0.15
-  };
+// src/services/jobService.js
+const Job = require('../models/Job');
 
-  // Designation match
-  if (job.title.toLowerCase().includes(criteria.designation.toLowerCase())) {
-    score += weights.designation;
-  }
-
-  // Experience match
-  if (criteria.experience && job.experienceRequired) {
-    const experienceDiff = Math.abs(job.experienceRequired - criteria.experience);
-    if (experienceDiff <= 2) {
-      score += weights.experience * (1 - experienceDiff/2);
-    }
-  }
-
-  // Location match
-  if (job.location.toLowerCase().includes(criteria.location.toLowerCase())) {
-    score += weights.location;
-  }
-
-  // Job function match
-  if (criteria.jobFunction && job.jobFunction?.toLowerCase().includes(criteria.jobFunction.toLowerCase())) {
-    score += weights.jobFunction;
-  }
-
-  // Preferences match (keyword based)
-  if (criteria.preferences) {
-    const preferenceKeywords = criteria.preferences.toLowerCase().split(',').map(p => p.trim());
-    const jobDescription = job.description?.toLowerCase() || '';
-    const matchedPreferences = preferenceKeywords.filter(keyword => 
-      jobDescription.includes(keyword)
-    );
-    score += weights.preferences * (matchedPreferences.length / preferenceKeywords.length);
-  }
-
-  return Math.round(score * 100);
+const calculateSkillSimilarity = (profileSkills, requiredSkills) => {
+    if (!profileSkills || !requiredSkills) return 0;
+    const profileSkillSet = new Set(profileSkills.map(s => s.toLowerCase()));
+    const requiredSkillSet = new Set(requiredSkills.map(s => s.toLowerCase()));
+    const intersection = [...profileSkillSet].filter(skill => requiredSkillSet.has(skill));
+    return intersection.length / Math.max(profileSkillSet.size, requiredSkillSet.size);
 };
 
-exports.getRelevantJobs = async ({ experience, jobFunction, designation, location, preferences, page = 1, limit = 20 }) => {
-  try {
-    // Fetch jobs using the crawler
-    const crawler = new LinkedInCrawler({ headless: true });
-    await crawler.initialize();
+const calculateLocationMatch = (jobLocation, targetLocation) => {
+    if (!jobLocation || !targetLocation) return 0;
+    jobLocation = jobLocation.toLowerCase();
+    targetLocation = targetLocation.toLowerCase();
     
-    const searchQuery = `${designation} ${location}`;
-    const rawJobs = await crawler.crawlLinkedInJobs(searchQuery, limit * 2); // Fetch extra to allow for filtering
+    if (jobLocation === targetLocation) return 1;
+    if (jobLocation.includes(targetLocation) || targetLocation.includes(jobLocation)) return 0.8;
+    return 0;
+};
+
+const calculateJobMatchScore = (job, criteria) => {
+    const weights = {
+        title: 0.25,
+        skills: 0.25,
+        location: 0.2,
+        experience: 0.2,
+        company: 0.1
+    };
+
+    let score = 0;
     
-    // Calculate match scores
-    const scoredJobs = rawJobs.map(job => ({
-      ...job,
-      matchScore: calculateJobMatchScore(job, {
-        experience,
-        jobFunction,
-        designation,
-        location,
-        preferences
-      })
-    }));
+    // Title/Designation match
+    const titleMatch = job.designation.toLowerCase().includes(criteria.designation.toLowerCase()) ? 1 : 0;
+    score += titleMatch * weights.title;
     
-    // Sort by match score and paginate
-    const sortedJobs = scoredJobs
-      .sort((a, b) => b.matchScore - a.matchScore)
-      .slice((page - 1) * limit, page * limit);
+    // Skills match
+    if (criteria.skills) {
+        const skillsMatch = calculateSkillSimilarity(job.requiredSkills, criteria.skills);
+        score += skillsMatch * weights.skills;
+    }
     
-    return sortedJobs;
-  } catch (error) {
-    console.error('Error in getRelevantJobs:', error);
-    throw error;
-  }
+    // Location match
+    const locationMatch = calculateLocationMatch(job.location, criteria.location);
+    score += locationMatch * weights.location;
+    
+    // Experience match
+    if (criteria.experience && job.requiredExperience) {
+        const diff = Math.abs(job.requiredExperience - criteria.experience);
+        let experienceMatch = 0.4;
+        if (diff === 0) experienceMatch = 1;
+        else if (diff <= 2) experienceMatch = 0.8;
+        else if (diff <= 4) experienceMatch = 0.6;
+        score += experienceMatch * weights.experience;
+    }
+
+    return Math.round(score * 100);
+};
+
+exports.getRelevantJobs = async ({ designation, location, experience, skills, limit = 10 }) => {
+    try {
+        const query = {
+            $or: [
+                { designation: { $regex: designation, $options: 'i' } },
+                { location: { $regex: location, $options: 'i' } }
+            ]
+        };
+
+        if (experience) {
+            query.requiredExperience = {
+                $gte: experience - 4,
+                $lte: experience + 4
+            };
+        }
+
+        const jobs = await Job.find(query);
+
+        const scoredJobs = jobs.map(job => ({
+            ...job.toObject(),
+            matchScore: calculateJobMatchScore(job, { designation, location, experience, skills })
+        }));
+
+        return scoredJobs
+            .sort((a, b) => b.matchScore - a.matchScore)
+            .slice(0, limit);
+
+    } catch (error) {
+        console.error('Error in getRelevantJobs:', error);
+        throw error;
+    }
 };

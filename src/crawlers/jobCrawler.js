@@ -1,55 +1,74 @@
-const puppeteer = require('puppeteer');
-const { getRandomUserAgent } = require('../utils/userAgentRotator');
-const proxyRotator = require('../utils/proxyRotator');
-const Job = require('../models/Job');
-const { retryCrawl } = require('../utils/retry'); // Custom retry logic
+const BaseCrawler = require('./baseCrawler');
 
-class JobCrawler {
-  async crawl() {
-    const proxy = proxyRotator.getNext();
-    let browser;
+class JobCrawler extends BaseCrawler {
+  constructor(options = {}) {
+    super(options);
+    this.baseUrl = 'https://www.linkedin.com/jobs/search';
+  }
+
+  async crawlJobs(designation, location) {
     try {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [`--proxy-server=${proxy}`],
-      });
-      const page = await browser.newPage();
+      await this.initialize();
       
-      const userAgent = getRandomUserAgent();
-      await page.setUserAgent(userAgent);
-
-      // Retry crawl in case of errors
-      await retryCrawl(async () => {
-        await page.goto('https://www.linkedin.com/jobs/search/?keywords=software%20engineer', { waitUntil: 'networkidle2' });
-        
-        // Crawling logic
-        const jobs = await page.evaluate(() => {
-          return [...document.querySelectorAll('.job-card-container')].map(job => ({
-            title: job.querySelector('.job-card-list__title')?.innerText || '',
-            company: job.querySelector('.job-card-container__company-name')?.innerText || '',
-            location: job.querySelector('.job-card-container__metadata-item')?.innerText || '',
-            description: job.querySelector('.job-card-container__description')?.innerText || '',
-            url: job.querySelector('a.job-card-container__link')?.href || '',
-            postedDate: new Date(job.querySelector('.job-card-container__listed-time')?.innerText || Date.now())
-          }));
-        });
-
-        // Filter out incomplete job entries
-        const filteredJobs = jobs.filter(job => job.title && job.company && job.location && job.url);
-        
-        // Save to database
-        await Job.insertMany(filteredJobs);
-        console.log(`Successfully crawled ${filteredJobs.length} jobs.`);
-      });
-
+      const searchUrl = `${this.baseUrl}?keywords=${encodeURIComponent(designation)}&location=${encodeURIComponent(location)}`;
+      await this.navigateToPage(searchUrl, '.jobs-search-results-list');
+      
+      const jobs = await this.extractJobListings();
+      
+      // Store jobs in database
+      await this.saveJobs(jobs);
+      
+      await this.close();
+      return jobs;
     } catch (error) {
-      console.error('Crawling error:', error);
-    } finally {
-      if (browser) {
-        await browser.close();
+      console.error('Error crawling jobs:', error);
+      await this.close();
+      throw error;
+    }
+  }
+
+  async extractJobListings() {
+    return await this.page.evaluate(() => {
+      const jobCards = document.querySelectorAll('.job-card-container');
+      return Array.from(jobCards).map(card => ({
+        title: card.querySelector('.job-card-list__title')?.innerText?.trim() || '',
+        company: card.querySelector('.job-card-container__company-name')?.innerText?.trim() || '',
+        location: card.querySelector('.job-card-container__metadata-item')?.innerText?.trim() || '',
+        url: card.querySelector('.job-card-list__title')?.href || '',
+        datePosted: new Date().toISOString()
+      }));
+    });
+  }
+
+  async saveJobs(jobs) {
+    const Job = require('../models/Job');
+    for (const jobData of jobs) {
+      try {
+        // Get full job details
+        await this.navigateToPage(jobData.url, '.job-view-layout');
+        const fullJobDetails = await this.extractJobDetails();
+        
+        // Merge and save
+        await Job.findOneAndUpdate(
+          { url: jobData.url },
+          { ...jobData, ...fullJobDetails },
+          { upsert: true, new: true }
+        );
+      } catch (error) {
+        console.error(`Error saving job ${jobData.url}:`, error);
       }
     }
   }
+
+  async extractJobDetails() {
+    return await this.page.evaluate(() => ({
+      description: document.querySelector('.job-description')?.innerText?.trim() || '',
+      skillsRequired: Array.from(document.querySelectorAll('.job-requirements .skill-tag'))
+        .map(skill => skill.innerText.trim()),
+      experienceRequired: document.querySelector('.experience-requirement')?.innerText?.trim() || '',
+      jobFunction: document.querySelector('.job-function')?.innerText?.trim() || ''
+    }));
+  }
 }
 
-module.exports = new JobCrawler();
+module.exports = JobCrawler;  // Export the class, not an instance

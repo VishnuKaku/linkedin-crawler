@@ -1,9 +1,9 @@
+// src/api/routes/jobs.js
 const express = require('express');
-const { getJobs } = require('../../controllers/jobController');
+const jobController = require('../controllers/jobController');
 
 const router = express.Router();
 
-// Route to fetch jobs with query parameters
-router.get('/', getJobs);  // Already handles the query parameters for filtering
+router.get('/', jobController.getJobs);
 
 module.exports = router;

@@ -3,56 +3,31 @@ const LinkedInCrawler = require('../utils/crawler');
 
 async function main() {
   const crawler = new LinkedInCrawler({
-    headless: false,  // Set this to true when you're done debugging
-    waitTime: 3000,
-    retries: 3
+    username: process.env.LINKEDIN_EMAIL,    // Changed from direct email/password passing
+    password: process.env.LINKEDIN_PASSWORD  // to match the constructor expectations
   });
 
   try {
     console.log('Initializing crawler...');
     await crawler.initialize();
 
-    // Validate aenvironment variables early
-    const email = process.env.LINKEDIN_EMAIL;
-    const password = process.env.LINKEDIN_PASSWORD;
-
-    if (!email || !password) {
+    // Validate environment variables early
+    if (!process.env.LINKEDIN_EMAIL || !process.env.LINKEDIN_PASSWORD) {
       throw new Error('LinkedIn credentials (LINKEDIN_EMAIL, LINKEDIN_PASSWORD) are not set in environment variables.');
     }
 
     console.log('LinkedIn credentials found, attempting login...');
-
-    // Login with retries
-    let loggedIn = false;
-    let loginAttempts = 0;
-
-    while (!loggedIn && loginAttempts < crawler.retries) {
-      try {
-        console.log(`Attempting login (Attempt ${loginAttempts + 1})...`);
-        await crawler.login(email, password);
-        loggedIn = true;
-        console.log('Login successful!');
-      } catch (loginError) {
-        loginAttempts++;
-        console.error('Login attempt failed:', loginError);
-        if (loginAttempts >= crawler.retries) {
-          throw new Error('Max login retries reached.');
-        }
-        console.log(`Retrying login... (Attempt ${loginAttempts + 1})`);
-      }
-    }
+    await crawler.login();  // No need to pass credentials here as they're already in the constructor
+    console.log('Login successful!');
 
     // Start crawling jobs
     console.log('Starting job crawl...');
-    const jobQuery = 'Software Engineer';  // Dynamic input is possible
-    const jobLimit = 20;  // Can be dynamic based on user input or config
-
-    // Fetch jobs with improved error handling and more logging
-    const jobs = await crawler.crawlLinkedInJobs(jobQuery, jobLimit);
+    const jobQuery = 'Software Engineer';
+    const jobs = await crawler.crawlJobs(jobQuery);  // Changed from crawlLinkedInJobs to crawlJobs
 
     if (jobs.length > 0) {
       console.log(`Successfully crawled ${jobs.length} jobs`);
-      // Process the jobs here, like saving them to a database or file
+      console.log(jobs);
     } else {
       console.log('No jobs found.');
     }
@@ -60,7 +35,6 @@ async function main() {
   } catch (error) {
     console.error('Crawler failed:', error);
   } finally {
-    // Ensure crawler is properly closed
     try {
       console.log('Closing crawler...');
       await crawler.close();

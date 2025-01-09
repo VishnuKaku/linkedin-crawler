@@ -1,64 +1,80 @@
-// profileService.js
-const calculateProfileMatchScore = (profile, criteria) => {
-  let score = 0;
-  const weights = {
-    designation: 0.4,
-    location: 0.3,
-    company: 0.3
-  };
+// src/services/profileService.js
+const Profile = require('../models/Profile');
 
-  // Designation match (using partial string matching)
-  if (profile.designation.toLowerCase().includes(criteria.designation.toLowerCase())) {
-    score += weights.designation;
-  }
-
-  // Location match (exact match with bonus for nearby locations)
-  if (profile.location.toLowerCase() === criteria.location.toLowerCase()) {
-    score += weights.location;
-  } else if (profile.location.toLowerCase().includes(criteria.location.toLowerCase())) {
-    score += weights.location * 0.5;
-  }
-
-  // Company match
-  if (profile.company.toLowerCase() === criteria.company.toLowerCase()) {
-    score += weights.company;
-  }
-
-  // Experience match (if provided)
-  if (criteria.experience && profile.experience) {
-    const experienceDiff = Math.abs(profile.experience - criteria.experience);
-    if (experienceDiff <= 2) {
-      score += 0.1 * (1 - experienceDiff/2);
-    }
-  }
-
-  return Math.round(score * 100);
+const calculateSkillSimilarity = (profileSkills, targetSkills) => {
+    if (!profileSkills || !targetSkills) return 0;
+    const profileSkillSet = new Set(profileSkills.map(s => s.toLowerCase()));
+    const targetSkillSet = new Set(targetSkills.map(s => s.toLowerCase()));
+    const intersection = [...profileSkillSet].filter(skill => targetSkillSet.has(skill));
+    return intersection.length / Math.max(profileSkillSet.size, targetSkillSet.size);
 };
 
-exports.getRelevantProfiles = async ({ designation, location, company, experience, page = 1, limit = 10 }) => {
-  try {
-    // Fetch profiles from LinkedIn using the crawler
-    const crawler = new LinkedInCrawler({ headless: true });
-    await crawler.initialize();
+const calculateLocationMatch = (profileLocation, targetLocation) => {
+    if (!profileLocation || !targetLocation) return 0;
+    profileLocation = profileLocation.toLowerCase();
+    targetLocation = targetLocation.toLowerCase();
     
-    // Search for profiles based on criteria
-    const searchQuery = `${designation} ${company} ${location}`;
-    const rawProfiles = await crawler.searchProfiles(searchQuery, limit * 2); // Fetch extra to allow for filtering
+    if (profileLocation === targetLocation) return 1;
+    if (profileLocation.includes(targetLocation) || targetLocation.includes(profileLocation)) return 0.8;
+    return 0;
+};
+
+const calculateProfileMatchScore = (profile, criteria) => {
+    const weights = {
+        designation: 0.3,
+        company: 0.25,
+        location: 0.25,
+        skills: 0.2
+    };
+
+    let score = 0;
     
-    // Calculate match scores and filter profiles
-    const scoredProfiles = rawProfiles.map(profile => ({
-      ...profile,
-      matchScore: calculateProfileMatchScore(profile, { designation, location, company, experience })
-    }));
+    // Designation match
+    const designationMatch = profile.designation.toLowerCase().includes(criteria.designation.toLowerCase()) ? 1 : 0;
+    score += designationMatch * weights.designation;
     
-    // Sort by match score and paginate
-    const sortedProfiles = scoredProfiles
-      .sort((a, b) => b.matchScore - a.matchScore)
-      .slice((page - 1) * limit, page * limit);
+    // Company match
+    if (criteria.company && profile.company) {
+        const companyMatch = profile.company.toLowerCase().includes(criteria.company.toLowerCase()) ? 1 : 0;
+        score += companyMatch * weights.company;
+    }
     
-    return sortedProfiles;
-  } catch (error) {
-    console.error('Error in getRelevantProfiles:', error);
-    throw error;
-  }
+    // Location match
+    const locationMatch = calculateLocationMatch(profile.location, criteria.location);
+    score += locationMatch * weights.location;
+    
+    // Skills match
+    if (criteria.skills && profile.skills && profile.skills.length > 0) {
+        const skillsMatch = calculateSkillSimilarity(profile.skills, criteria.skills);
+        score += skillsMatch * weights.skills;
+    }
+
+    return Math.round(score * 100);
+};
+
+exports.getRelevantProfiles = async ({ designation, location, company, skills, limit = 10 }) => {
+    try {
+        const query = {
+            $or: [
+                { designation: { $regex: designation, $options: 'i' } },
+                { location: { $regex: location, $options: 'i' } },
+                { company: { $regex: company, $options: 'i' } }
+            ]
+        };
+
+        const profiles = await Profile.find(query);
+
+        const scoredProfiles = profiles.map(profile => ({
+            ...profile.toObject(),
+            matchScore: calculateProfileMatchScore(profile, { designation, location, company, skills })
+        }));
+
+        return scoredProfiles
+            .sort((a, b) => b.matchScore - a.matchScore)
+            .slice(0, limit);
+
+    } catch (error) {
+        console.error('Error in getRelevantProfiles:', error);
+        throw error;
+    }
 };

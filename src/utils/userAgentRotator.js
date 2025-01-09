@@ -61,16 +61,8 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.5911.0 Safari/537.36"
 ];
 
-/**
- * Get a random user agent from the list.
- * @returns {string} A random user agent string.
- */
-const getRandomUserAgent = () => {
-  if (userAgents.length === 0) {
-    throw new Error('User agent list is empty');
-  }
-  const randomIndex = Math.floor(Math.random() * userAgents.length);
-  return userAgents[randomIndex];
-};
+function getRandomUserAgent() {
+  return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
 
 module.exports = { getRandomUserAgent };
